@@ -1,0 +1,7 @@
+1.0.0:
+  - 'Init plugin'
+1.0.1:
+  - 'Add sync orders with 1c'
+  - create_auth_one_c_table.php
+  - update_ordersshopaholic_order_table01.php
+  - update_ordersshopaholic_orderpositions_table01.php
