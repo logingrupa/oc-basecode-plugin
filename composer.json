@@ -1,5 +1,5 @@
 {
-    "name": "logingrupa/oc-basecode-plugin",
+    "name": "lovata/oc-basecode-plugin",
     "type": "october-plugin",
     "description": "Plugin for October CMS extending the Lovata.Shopaholic store functionality, adding Order import export form 1C",
     "license": "GPL-3.0-only",
