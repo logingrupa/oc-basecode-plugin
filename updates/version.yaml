@@ -7,3 +7,5 @@
   - update_ordersshopaholic_orderpositions_table01.php
 1.0.2:
   - Replace the removed October Rain Argon class with Carbon, the 1C exchange returned 500 on checkauth. Auth headers no longer written to the request log.
+1.0.3:
+  - A 1C order without a delivery line keeps the shipping type chosen at checkout. Every store pickup order lost its shipping type on the first status sync, because the sync looked for a delivery position in the 1C order and wrote null when none matched.

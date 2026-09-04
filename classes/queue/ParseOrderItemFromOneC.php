@@ -156,8 +156,11 @@ class ParseOrderItemFromOneC
 
         try {
             $this->obOrder->status_id = $obStatus->id;
-            $this->obOrder->shipping_price = $this->fShippingPrice;
-            $this->obOrder->shipping_type_id = (!empty($this->obShippingType)) ? $this->obShippingType->id : null;
+            // A 1C order without a delivery line (store pickup) keeps the shipping type chosen at checkout.
+            if (!empty($this->obShippingType)) {
+                $this->obOrder->shipping_price = $this->fShippingPrice;
+                $this->obOrder->shipping_type_id = $this->obShippingType->id;
+            }
             $this->obOrder->save();
         } catch (\Exception $obException) {
             throw new $obException('Cannot update order #' . $this->obOrder->id);
