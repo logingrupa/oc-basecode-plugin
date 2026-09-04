@@ -2,7 +2,7 @@
 
 use Illuminate\Console\Command;
 use Lovata\BaseCode\Models\AuthOneC;
-use October\Rain\Argon\Argon;
+use Carbon\Carbon;
 
 /**
  * Class ClearAuthOneC
@@ -27,7 +27,7 @@ class ClearAuthOneC extends Command
      */
     public function handle()
     {
-        $obDate = clone Argon::now();
+        $obDate = clone Carbon::now();
         $obDate->subDay();
 
         $obAuthList = AuthOneC::whereDate('created_at', '<=', $obDate)->get();

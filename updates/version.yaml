@@ -5,3 +5,5 @@
   - create_auth_one_c_table.php
   - update_ordersshopaholic_order_table01.php
   - update_ordersshopaholic_orderpositions_table01.php
+1.0.2:
+  - Replace the removed October Rain Argon class with Carbon, the 1C exchange returned 500 on checkauth. Auth headers no longer written to the request log.

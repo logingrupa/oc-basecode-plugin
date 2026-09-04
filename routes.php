@@ -2,10 +2,11 @@
 use Illuminate\Http\Request;
 Route::group(['prefix' => 'v1'], function () {
     Route::any('1c/1c_exchange', function (Request $request) {
+        $arSafeHeaders = array_diff_key($request->headers->all(), array_flip(['authorization', 'php-auth-user', 'php-auth-pw']));
         Log::info('1C Exchange Request: ' .
             'URL: ' . $request->fullUrl() . ' | ' .
             'Method: ' . $request->method() . ' | ' .
-            'Headers: ' . json_encode($request->headers->all()) . ' | ' .
+            'Headers: ' . json_encode($arSafeHeaders) . ' | ' .
             'Body: ' . json_encode($request->all())
         );
     

@@ -5,7 +5,7 @@ use Lovata\BaseCode\Classes\Helper\OneC\ImportOrders;
 use Lovata\OrdersShopaholic\Models\Order;
 use Lovata\OrdersShopaholic\Models\OrderPosition;
 use Lovata\BaseCode\Models\Settings;
-use October\Rain\Argon\Argon;
+use Carbon\Carbon;
 use XMLWriter;
 
 /**
@@ -71,7 +71,7 @@ class SiteOrderList
         $this->obXMLWriter->startDocument('1.0', 'UTF-8');
         $this->obXMLWriter->startElement('КоммерческаяИнформация');
         $this->obXMLWriter->writeAttribute('ВерсияСхемы', '2.05');
-        $this->obXMLWriter->writeAttribute('ДатаФормирования', Argon::now()->format('Y-m-d H:i:s'));
+        $this->obXMLWriter->writeAttribute('ДатаФормирования', Carbon::now()->format('Y-m-d H:i:s'));
         $this->obXMLWriter->writeAttribute('ФорматДаты', 'ДФ=yyyy-MM-dd; ДЛФ=DT');
         $this->obXMLWriter->writeAttribute('ФорматВремени', 'ДФ=ЧЧ:мм:сс; ДЛФ=T');
         $this->obXMLWriter->writeAttribute('РазделительДатаВремя', ' ');

@@ -2,7 +2,7 @@
 
 use Kharanenka\Scope\CodeField;
 use Model;
-use October\Rain\Argon\Argon;
+use Carbon\Carbon;
 use October\Rain\Database\ModelException;
 
 /**
@@ -53,7 +53,7 @@ class AuthOneC extends Model
             return null;
         }
 
-        $sDate = Argon::now()->toDateTimeString();
+        $sDate = Carbon::now()->toDateTimeString();
         $sNumber = mt_rand(5000, 10000);
         $iCount = 0;
 
