@@ -105,7 +105,7 @@ class ParseOrderItemFromOneC
      * @param string|null $sString
      * @return string
      */
-    protected function formatString(string $sString = null): string
+    protected function formatString(?string $sString = null): string
     {
         if (empty($sString) || is_array($sString)) {
             return '';
