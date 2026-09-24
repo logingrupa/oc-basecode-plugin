@@ -119,28 +119,10 @@ class ImportOrders extends AbstractHelper
         }
 
         foreach ($arElementList as $obXmlElement) {
-            $sOrderId = $obXmlElement->getValueByPath('Ид');
-            $sOrderNumber = $obXmlElement->getValueByPath('Номер');
+            $arData = self::parseOrderDocument($obXmlElement);
 
-            if (empty($sOrderId)) {
+            if (empty($arData)) {
                 continue;
-            }
-
-            $arData = [
-                'order_number' => $sOrderNumber,
-                'code_status' => $this->getStatusCode($obXmlElement),
-                'order_position_list' => [],
-            ];
-
-            $arOrderPositionList = $obXmlElement->xpath('Товары/Товар');
-
-            foreach ($arOrderPositionList as $obOrderPositionXmlObject) {
-                $arData['order_position_list'][] = [
-                    'external_id' => $obOrderPositionXmlObject->getValueByPath('Ид'),
-                    'price' => $obOrderPositionXmlObject->getValueByPath('ЦенаЗаЕдиницу'),
-                    'quantity' => $obOrderPositionXmlObject->getValueByPath('Количество'),
-                    'discount_data' => $this->getOrderPositionDiscountData($obOrderPositionXmlObject),
-                ];
             }
 
             \Queue::pushOn(self::QUEUE_IMPORT_ORDERS_FROM_ONE_C, ParseOrderItemFromOneC::class, $arData);
@@ -148,11 +130,46 @@ class ImportOrders extends AbstractHelper
     }
 
     /**
+     * Build the sync payload from one 1C order document.
+     * Per line 1C sends the list price, the quantity and the line total the customer was charged.
+     * @param XMLObjectClass $obXmlElement
+     * @return array|null
+     */
+    public static function parseOrderDocument($obXmlElement): ?array
+    {
+        $sOrderId = $obXmlElement->getValueByPath('Ид');
+        $sOrderNumber = $obXmlElement->getValueByPath('Номер');
+
+        if (empty($sOrderId)) {
+            return null;
+        }
+
+        $arData = [
+            'order_number' => $sOrderNumber,
+            'code_status' => self::getStatusCode($obXmlElement),
+            'order_position_list' => [],
+        ];
+
+        $arOrderPositionList = $obXmlElement->xpath(self::XML_PATH_ORDER_PRODUCT_LIST);
+
+        foreach ($arOrderPositionList as $obOrderPositionXmlObject) {
+            $arData['order_position_list'][] = [
+                'external_id' => $obOrderPositionXmlObject->getValueByPath('Ид'),
+                'price' => $obOrderPositionXmlObject->getValueByPath('ЦенаЗаЕдиницу'),
+                'quantity' => $obOrderPositionXmlObject->getValueByPath('Количество'),
+                'total' => $obOrderPositionXmlObject->getValueByPath('Сумма'),
+            ];
+        }
+
+        return $arData;
+    }
+
+    /**
      * Get status code.
      * @param XMLObjectClass $obXmlOrderObject
      * @return string|null
      */
-    protected function getStatusCode($obXmlOrderObject)
+    protected static function getStatusCode($obXmlOrderObject)
     {
         if (empty($obXmlOrderObject)) {
             return null;
@@ -184,29 +201,5 @@ class ImportOrders extends AbstractHelper
         }
 
         return $sStatusCode;
-    }
-
-    /**
-     * Get order position discount data
-     * @param $obOrderPositionXmlObject
-     * @return array
-     */
-    private function getOrderPositionDiscountData($obOrderPositionXmlObject): array
-    {
-        $arDiscountElementList = $obOrderPositionXmlObject->xpath('Скидки/Скидка');
-        $arDiscountData = [];
-
-        if (empty($arDiscountElementList)) {
-            return $arDiscountData;
-        }
-
-        foreach ($arDiscountElementList as $obDiscountXMLObject) {
-            $arDiscountData[] = [
-                'percent' => $obDiscountXMLObject->getValueByPath('Процент'),
-                'is_taken_in_sum' => $obDiscountXMLObject->getValueByPath('УчтеноВСумме'),
-            ];
-        }
-
-        return $arDiscountData;
     }
 }

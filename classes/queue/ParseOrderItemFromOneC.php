@@ -10,6 +10,7 @@ use Lovata\Toolbox\Traits\Helpers\TraitValidationHelper;
 use Lovata\BaseCode\Classes\Helper\OneC\Import1CHelper;
 use Lovata\BaseCode\Classes\Helper\OneC\ImportOrders;
 use Lovata\BaseCode\Classes\Parser\XMLObjectClass;
+use Lovata\OrdersShopaholic\Classes\PromoMechanism\OrderPromoMechanismProcessor;
 use Lovata\OrdersShopaholic\Models\Order;
 use Lovata\OrdersShopaholic\Models\OrderPosition;
 use Lovata\OrdersShopaholic\Models\ShippingType;
@@ -51,19 +52,27 @@ class ParseOrderItemFromOneC
      */
     public function fire($obJob, $arData)
     {
+        $this->process(is_array($arData) ? $arData : []);
+        $obJob->delete();
+    }
+
+    /**
+     * Sync one order from its 1C payload, see ImportOrders::parseOrderDocument().
+     * @param array $arData
+     * @throws \Exception
+     */
+    public function process(array $arData)
+    {
         Import1CHelper::instance()->setTrueStatus();
         $this->arData = $arData;
 
-        if (empty($this->arData) || !is_array($this->arData)) {
-            $obJob->delete();
-
+        if (empty($this->arData)) {
             return;
         }
 
         $this->getShippingTypeExternalIdList();
         $this->getOrderShippingData();
         $this->syncOrder();
-        $obJob->delete();
     }
 
     /**
@@ -200,10 +209,18 @@ class ParseOrderItemFromOneC
                 continue;
             }
 
-            $fPrice = $this->formatString(array_get($arOrderPosition, 'price'));
-            $fPrice = PriceHelper::toFloat($fPrice);
+            $fListPrice = PriceHelper::toFloat($this->formatString(array_get($arOrderPosition, 'price')));
+            $fTotal = PriceHelper::toFloat($this->formatString(array_get($arOrderPosition, 'total')));
             $iQuantity = (integer)$this->formatString(array_get($arOrderPosition, 'quantity'));
-            $arDiscounts = array_get($arOrderPosition, 'discount_data', []);
+
+            if ($iQuantity < 1) {
+                Result::setFalse()->setMessage('1C line ' . $sExternalId . ' has quantity ' . $iQuantity);
+
+                break;
+            }
+
+            // 1C Сумма is what the customer was charged for the line, ЦенаЗаЕдиницу the list price.
+            $fPrice = round($fTotal / $iQuantity, 2);
 
             $arOrderPositionExternalIdListFromOneC[] = $sExternalId;
 
@@ -227,12 +244,12 @@ class ParseOrderItemFromOneC
                     'item_id' => $obOffer->id,
                     'item_type' => Offer::class,
                     'price' => $fPrice,
-                    'old_price' => $this->getOldPriceFromDiscounts($arDiscounts, $fPrice),
+                    'old_price' => $fListPrice,
                     'quantity' => $iQuantity
                 ];
             } else {
                 $obOrderPosition->price = $fPrice;
-                $obOrderPosition->old_price = $this->getOldPriceFromDiscounts($arDiscounts, $fPrice);
+                $obOrderPosition->old_price = $fListPrice;
                 $obOrderPosition->quantity = $iQuantity;
 
                 if ($obOrderPosition->isClean()) {
@@ -264,6 +281,10 @@ class ParseOrderItemFromOneC
             return null;
         }
 
+        // The 1C line totals already contain every discount the manager kept, nothing may be applied on top.
+        $this->obOrder->order_promo_mechanism()->delete();
+        OrderPromoMechanismProcessor::update($this->obOrder);
+
         $this->obOrder->save();
 
         DB::commit();
@@ -289,39 +310,6 @@ class ParseOrderItemFromOneC
         }
 
         return null;
-    }
-
-    /**
-     * Get order position old price from discount info
-     * @param array $arDiscountList
-     * @param float $fPositionPrice
-     * @return float
-     */
-    private function getOldPriceFromDiscounts(array $arDiscountList, float $fPositionPrice): float
-    {
-        $fOldPriceValue = 0;
-        $fDiscountPercent = 0;
-
-        if (empty($arDiscountList)) {
-            return $fOldPriceValue;
-        }
-
-        foreach ($arDiscountList as $arDiscount) {
-            $fItemDiscountPercent = (float)array_get($arDiscount, 'percent');
-            $bIsTakenInSum = (bool)array_get($arDiscount, 'is_taken_in_sum');
-
-            if (empty($fItemDiscountPercent) || !$bIsTakenInSum) {
-                continue;
-            }
-
-            $fDiscountPercent = $fDiscountPercent + $fItemDiscountPercent;
-        }
-
-        if (empty($fDiscountPercent)) {
-            return $fOldPriceValue;
-        }
-
-        return $fPositionPrice * (1 + $fDiscountPercent / 100);
     }
 
     /**
