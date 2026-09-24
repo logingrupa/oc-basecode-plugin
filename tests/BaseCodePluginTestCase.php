@@ -4,16 +4,31 @@ use Illuminate\Support\Facades\DB as Db;
 use Illuminate\Support\Facades\Schema;
 use Lovata\BaseCode\Classes\Helper\OneC\ImportOrders;
 use Lovata\BaseCode\Classes\Parser\XMLObjectClass;
+use Lovata\OrdersShopaholic\Classes\PromoMechanism\WithoutCondition\WithoutConditionDiscountPosition;
 use October\Rain\Database\Schema\Blueprint;
 use System\Models\SettingModel;
 
 /**
  * The full Shopaholic migration chain does not run on SQLite, so the order
  * tables the 1C sync touches are created as stubs with the columns the real
- * models read and write.
+ * models read and write. The shared fixture is the real 1C export of .lv
+ * order 260907-0010 with the buyer renamed (goods 45.21 + delivery 4.00).
  */
 abstract class BaseCodePluginTestCase extends PluginTestCase
 {
+    const OFFER_TYPE = 'Lovata\Shopaholic\Models\Offer';
+    const FIXTURE_ORDER = 'order-260907-0010.xml';
+    const DELIVERY_EXTERNAL_ID = '09f78ef6-de0a-11ea-ab9f-68ecc5c29a9c';
+
+    /** Shop values at checkout: 1C external id, shop price */
+    const CHECKOUT_LINES = [
+        ['b5a39dbf-7480-11e3-806d-00138f293d96#af657c3c-7474-11f1-8b15-cc5ef85a3bbc', 12.72],
+        ['63d3e754-fa02-11ed-bad0-68ecc5c29a9c#7b09ed19-fa02-11ed-bad0-68ecc5c29a9c', 16.90],
+        ['8b4a0206-1fad-11e9-ab33-68ecc5c29a9c#98da999c-911a-11ea-ab9b-68ecc5c29a9c', 8.30],
+        ['2c9d60e0-292a-11ed-bab4-68ecc5c29a9c#42e4a7a0-292a-11ed-bab4-68ecc5c29a9c', 10.90],
+        ['6dad7526-bc15-11ee-baeb-68ecc5c29a9c#80b8f471-bc15-11ee-baeb-68ecc5c29a9c', 10.90],
+    ];
+
     protected $autoMigrate = false;
 
     /**
@@ -38,14 +53,75 @@ abstract class BaseCodePluginTestCase extends PluginTestCase
         SettingModel::clearInternalCache();
     }
 
+    protected function fixturePath(string $sFileName): string
+    {
+        return __DIR__.'/fixtures/'.$sFileName;
+    }
+
     protected function fixtureDocument(string $sFileName): XMLObjectClass
     {
-        $obXml = ImportOrders::getXmlObject(__DIR__.'/fixtures/'.$sFileName);
+        $obXml = ImportOrders::getXmlObject($this->fixturePath($sFileName));
         $arDocumentList = $obXml->xpath(ImportOrders::XML_PATH_ORDER_LIST);
 
         $this->assertCount(1, $arDocumentList, 'fixture holds exactly one order document');
 
         return $arDocumentList[0];
+    }
+
+    /**
+     * Order 260907-0010 as the shop stored it at checkout: waiting for payment,
+     * five goods lines at shop prices plus one stale line 1C never had, and one
+     * shop mechanism (10 % on every position) still attached.
+     */
+    protected function seedCheckoutOrder(): int
+    {
+        Db::table('lovata_orders_shopaholic_shipping_types')->insert([
+            'id' => 6, 'active' => 1, 'name' => 'Pakomats', 'code' => 'omniva', 'external_id' => self::DELIVERY_EXTERNAL_ID, 'price' => 4.00,
+        ]);
+
+        $iOrderID = (int) Db::table('lovata_orders_shopaholic_orders')->insertGetId([
+            'order_number' => '260907-0010',
+            'status_id' => 2,
+            'shipping_type_id' => 6,
+            'shipping_price' => 4.00,
+            'currency_id' => 1,
+            'property' => '{}',
+            'created_at' => '2026-09-07 19:44:26',
+            'updated_at' => '2026-09-07 19:44:26',
+        ]);
+
+        foreach (self::CHECKOUT_LINES as $iIndex => [$sExternalID, $fPrice]) {
+            $this->insertPosition($iOrderID, $sExternalID, $iIndex + 1, $fPrice);
+        }
+        $this->insertPosition($iOrderID, 'deadbeef#stale', 99, 5.00);
+
+        Db::table('lovata_orders_shopaholic_order_promo_mechanism')->insert([
+            'order_id' => $iOrderID,
+            'mechanism_id' => 75,
+            'name' => 'Apjoma Boittle gel 5gab',
+            'type' => WithoutConditionDiscountPosition::class,
+            'priority' => 1,
+            'discount_value' => 10,
+            'discount_type' => 'percent',
+            'property' => '[]',
+        ]);
+
+        return $iOrderID;
+    }
+
+    private function insertPosition(int $iOrderID, string $sExternalID, int $iItemID, float $fPrice): void
+    {
+        Db::table('lovata_orders_shopaholic_order_positions')->insert([
+            'order_id' => $iOrderID,
+            'item_id' => $iItemID,
+            'item_type' => self::OFFER_TYPE,
+            'one_c_external_id' => $sExternalID,
+            'price' => $fPrice,
+            'old_price' => 0,
+            'quantity' => 1,
+            'created_at' => '2026-09-07 19:44:26',
+            'updated_at' => '2026-09-07 19:44:26',
+        ]);
     }
 
     protected function createOrderTables(): void

@@ -15,3 +15,5 @@
   - 1C order sync mirrors the 1C export - old_price is the 1C list price, price is the charged line total divided by quantity, and the order's promo mechanism rows are removed so nothing discounts the 1C numbers a second time. The percent-based old_price math and the discount parser are gone. New command basecode:1c.replay_orders replays the retained sale files, oldest first, optionally for one order number. First PHPUnit suite, fixture is the real 1C export of order 260907-0010.
 1.0.6:
   - Register basecode:1c.replay_orders, 1.0.5 shipped the command class without the Plugin.php registration.
+1.0.7:
+  - basecode:1c.replay_orders applies only the latest 1C export per order and mutes the order model listeners while it runs. The first replay applied an older export first, moved the status back and forward, and the Meta Purchase watcher fired for an old order. The sync reloads the positions relation before it recomputes the order totals, a removed line no longer lingers in order_stats.

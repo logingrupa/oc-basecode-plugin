@@ -283,6 +283,7 @@ class ParseOrderItemFromOneC
 
         // The 1C line totals already contain every discount the manager kept, nothing may be applied on top.
         $this->obOrder->order_promo_mechanism()->delete();
+        $this->obOrder->reloadRelations('order_position');
         OrderPromoMechanismProcessor::update($this->obOrder);
 
         $this->obOrder->save();
