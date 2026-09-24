@@ -5,6 +5,7 @@ use Lovata\BaseCode\Classes\Console\ClearAuthOneC;
 use System\Classes\PluginBase;
 
 //Console commands
+use Lovata\BaseCode\Classes\Console\ReplayOrdersFromOneC;
 use Lovata\BaseCode\Classes\Console\ResetAdminPassword;
 
 // Events
@@ -79,6 +80,7 @@ class Plugin extends PluginBase
     {
         $this->registerConsoleCommand('basecode:reset_admin_password', ResetAdminPassword::class);
         $this->registerConsoleCommand('basecode:1c.clear_auth', ClearAuthOneC::class);
+        $this->registerConsoleCommand('basecode:1c.replay_orders', ReplayOrdersFromOneC::class);
     }
 
     /**
