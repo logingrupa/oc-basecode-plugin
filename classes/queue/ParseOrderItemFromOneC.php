@@ -70,6 +70,13 @@ class ParseOrderItemFromOneC
             return;
         }
 
+        // A 1C document without lines (cleared or cancelled in 1C) is not mirrored, the shop order stays as it is.
+        if (empty($this->arData['order_position_list'])) {
+            Log::warning('1C order ' . array_get($this->arData, 'order_number') . ' has no lines, sync skipped');
+
+            return;
+        }
+
         $this->getShippingTypeExternalIdList();
         $this->getOrderShippingData();
         $this->syncOrder();
@@ -177,28 +184,40 @@ class ParseOrderItemFromOneC
     }
 
     /**
-     * Update order data.
-     * @return void|null
-     * @throws \Exception
+     * Mirror the 1C lines in one transaction, every exit commits or rolls it back.
+     * @throws \Throwable
      */
     protected function updateOrderPositionData()
     {
-        $arOrderPositionList = array_get($this->arData, 'order_position_list');
-
         DB::beginTransaction();
 
-        if (empty($arOrderPositionList) || !is_array($arOrderPositionList)) {
-            try {
-                $this->obOrder->order_position()->delete();
-                $this->obOrder->save();
-            } catch (\Exception $obException) {
-                Log::error($obException);
-                Result::setFalse()->setMessage($obException->getMessage());
-            }
+        try {
+            $bSynced = $this->mirrorOrderPositionList($this->arData['order_position_list']);
+        } catch (\Throwable $obException) {
+            DB::rollBack();
+
+            throw $obException;
+        }
+
+        if (!$bSynced) {
+            DB::rollBack();
 
             return;
         }
 
+        DB::commit();
+
+        Result::setTrue();
+    }
+
+    /**
+     * Write the 1C lines and recompute the order totals.
+     * @param array $arOrderPositionList
+     * @return bool
+     * @throws \Exception
+     */
+    protected function mirrorOrderPositionList(array $arOrderPositionList): bool
+    {
         $arOrderPositionExternalIdListFromOneC = [];
         $arOrderPositionDataToAdd = [];
 
@@ -276,9 +295,7 @@ class ParseOrderItemFromOneC
         $this->addOrderPositionsByExternalIdList($arOrderPositionDataToAdd);
 
         if (!Result::status()) {
-            DB::rollBack();
-
-            return null;
+            return false;
         }
 
         // The 1C line totals already contain every discount the manager kept, nothing may be applied on top.
@@ -288,9 +305,7 @@ class ParseOrderItemFromOneC
 
         $this->obOrder->save();
 
-        DB::commit();
-
-        Result::setTrue();
+        return true;
     }
 
     /**

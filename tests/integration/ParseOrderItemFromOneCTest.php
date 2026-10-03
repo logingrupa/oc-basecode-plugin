@@ -3,11 +3,13 @@
 require_once __DIR__.'/../BaseCodePluginTestCase.php';
 
 use Illuminate\Support\Facades\DB as Db;
+use Illuminate\Support\Facades\Event;
 use Kharanenka\Helper\Result;
 use Lovata\BaseCode\Classes\Helper\OneC\ImportOrders;
 use Lovata\BaseCode\Classes\Queue\ParseOrderItemFromOneC;
 use Lovata\OrdersShopaholic\Classes\PromoMechanism\OrderPromoMechanismProcessor;
 use Lovata\OrdersShopaholic\Models\Order;
+use Lovata\OrdersShopaholic\Models\OrderPosition;
 
 /**
  * After the 1C export the shop shows the manager's numbers: list price as
@@ -85,5 +87,36 @@ class ParseOrderItemFromOneCTest extends BaseCodePluginTestCase
         $this->assertFalse(Result::status());
         $this->assertSame(6, Db::table('lovata_orders_shopaholic_order_positions')->where('order_id', $this->iOrderID)->count(), 'rolled back, stale line still there');
         $this->assertSame(1, Db::table('lovata_orders_shopaholic_order_promo_mechanism')->where('order_id', $this->iOrderID)->count());
+        $this->assertSame(0, Db::transactionLevel());
+    }
+
+    public function testDocumentWithoutLinesKeepsTheOrderAndClosesNoTransaction(): void
+    {
+        $arData = ImportOrders::parseOrderDocument($this->fixtureDocument(self::FIXTURE_ORDER));
+        $arData['order_position_list'] = [];
+
+        (new ParseOrderItemFromOneC())->process($arData);
+
+        $this->assertSame(0, Db::transactionLevel());
+        $this->assertSame(6, Db::table('lovata_orders_shopaholic_order_positions')->where('order_id', $this->iOrderID)->count());
+        $this->assertSame(1, Db::table('lovata_orders_shopaholic_order_promo_mechanism')->where('order_id', $this->iOrderID)->count());
+    }
+
+    public function testExceptionInsideTheSyncRollsBack(): void
+    {
+        $arData = ImportOrders::parseOrderDocument($this->fixtureDocument(self::FIXTURE_ORDER));
+        Event::listen('eloquent.saving: ' . OrderPosition::class, function () {
+            throw new RuntimeException('position save failed');
+        });
+
+        try {
+            (new ParseOrderItemFromOneC())->process($arData);
+            $this->fail('the exception must reach the caller');
+        } catch (RuntimeException $obException) {
+            $this->assertSame('position save failed', $obException->getMessage());
+        }
+
+        $this->assertSame(0, Db::transactionLevel());
+        $this->assertSame(6, Db::table('lovata_orders_shopaholic_order_positions')->where('order_id', $this->iOrderID)->count());
     }
 }
