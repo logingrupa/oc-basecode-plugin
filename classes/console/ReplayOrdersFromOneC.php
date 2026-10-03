@@ -59,7 +59,13 @@ class ReplayOrdersFromOneC extends Command
                 continue;
             }
 
-            (new ParseOrderItemFromOneC())->process($arData);
+            try {
+                (new ParseOrderItemFromOneC())->process($arData);
+            } catch (\Throwable $obException) {
+                $iFailed++;
+                $this->error($sFileName . ' ' . $sOrderNumber . ' FAILED: ' . get_class($obException) . ': ' . $obException->getMessage());
+                continue;
+            }
 
             if (Result::status()) {
                 $iSynced++;

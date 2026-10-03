@@ -26,6 +26,14 @@ class Import1CHelper
     }
 
     /**
+     * Set false status.
+     */
+    public function setFalseStatus()
+    {
+        $this->bStatus = false;
+    }
+
+    /**
      * @return bool
      */
     public function status(): bool

@@ -35,14 +35,20 @@ class ParseOrderItemFromOneC
     /** @var Order */
     protected $obOrder;
 
-    /** @var array */
-    protected $arShippingTypeExternalIds = [];
+    /** @var \October\Rain\Database\Collection|ShippingType[] keyed by id */
+    protected $obShippingTypeList;
+
+    /** @var ShippingType[] 1C GUID => shipping type */
+    protected $arShippingTypeMap = [];
 
     /** @var float|null */
     protected $fShippingPrice;
 
-    /** @var \Illuminate\Database\Eloquent\Model|ShippingType|object|null */
-    private $obShippingType;
+    /** @var int|null */
+    protected $iShippingTypeID;
+
+    /** @var string[] 1C service line GUIDs no shipping type maps */
+    protected $arUnmappedServiceIdList = [];
 
     /**
      * Fire.
@@ -63,7 +69,6 @@ class ParseOrderItemFromOneC
      */
     public function process(array $arData)
     {
-        Import1CHelper::instance()->setTrueStatus();
         // Result is process-wide, a queue worker would otherwise carry an earlier job's failure into this sync.
         Result::setTrue()->setMessage('');
         $this->arData = $arData;
@@ -79,42 +84,88 @@ class ParseOrderItemFromOneC
             return;
         }
 
-        $this->getShippingTypeExternalIdList();
-        $this->getOrderShippingData();
-        $this->syncOrder();
+        // OrderModelHandler does not flag the order for re-export to 1C while the sync writes it.
+        Import1CHelper::instance()->setTrueStatus();
+
+        try {
+            $this->syncOrder();
+        } finally {
+            Import1CHelper::instance()->setFalseStatus();
+        }
     }
 
     /**
-     * Get shipping type external id list
+     * Inactive shipping types count too, a hidden type may exist only to map a 1C service.
+     * A GUID shared by several types maps to an active one first, then to the lowest id.
      */
-    private function getShippingTypeExternalIdList()
+    private function getShippingTypeMap()
     {
-        $this->arShippingTypeExternalIds = ShippingType::active()->lists('external_id');
+        $this->arShippingTypeMap = [];
+
+        // orderBy() replaces the Sortable sort_order scope.
+        $this->obShippingTypeList = ShippingType::orderBy('active', 'desc')->orderBy('id')->get(['id', 'active', 'external_id'])->keyBy('id');
+
+        foreach ($this->obShippingTypeList as $obShippingType) {
+            $sExternalId = $this->formatString($obShippingType->external_id);
+
+            if ($sExternalId === '' || isset($this->arShippingTypeMap[$sExternalId])) {
+                continue;
+            }
+
+            $this->arShippingTypeMap[$sExternalId] = $obShippingType;
+        }
     }
 
     /**
      * Shipping price = every 1C service line (shipping type lines and extra charges like "zPAK - Shipping cost").
-     * The shipping type only changes when a line matches one.
+     * The shipping type only changes when a line maps to one.
      */
     protected function getOrderShippingData()
     {
         $fPrice = null;
-        $sExternalId = null;
+        $arLineShippingTypeList = [];
+        $this->arUnmappedServiceIdList = [];
 
         foreach (array_get($this->arData, 'order_position_list') as $arOrderPosition) {
             $sLineExternalId = $this->formatString(array_get($arOrderPosition, 'external_id'));
-            $bShippingType = in_array($sLineExternalId, $this->arShippingTypeExternalIds);
+            $obShippingType = $this->arShippingTypeMap[$sLineExternalId] ?? null;
 
-            if (!$bShippingType && empty($arOrderPosition['is_service'])) {
+            if (empty($obShippingType) && empty($arOrderPosition['is_service'])) {
                 continue;
             }
 
-            $sExternalId = $bShippingType ? $sLineExternalId : $sExternalId;
+            if (empty($obShippingType)) {
+                $this->arUnmappedServiceIdList[] = $sLineExternalId;
+            } elseif (!isset($arLineShippingTypeList[$sLineExternalId])) {
+                $arLineShippingTypeList[$sLineExternalId] = $obShippingType;
+            }
+
             $fPrice += PriceHelper::toFloat($this->formatString(array_get($arOrderPosition, 'total')));
         }
 
         $this->fShippingPrice = $fPrice;
-        $this->obShippingType = empty($sExternalId) ? null : ShippingType::where('external_id', $sExternalId)->first();
+        $this->iShippingTypeID = $this->getShippingTypeID($arLineShippingTypeList);
+    }
+
+    /**
+     * The order keeps its shipping type while a 1C line carries that type's GUID, which other types may share.
+     * Otherwise the first line mapped to an active type wins over a hidden mapping-only type.
+     * @param ShippingType[] $arLineShippingTypeList 1C GUID => shipping type, in document order
+     * @return int|null
+     */
+    private function getShippingTypeID(array $arLineShippingTypeList): ?int
+    {
+        $obOrderShippingType = $this->obShippingTypeList->get($this->obOrder->shipping_type_id);
+
+        if (!empty($obOrderShippingType) && isset($arLineShippingTypeList[$this->formatString($obOrderShippingType->external_id)])) {
+            return (int) $obOrderShippingType->id;
+        }
+
+        $obLineShippingTypeList = collect($arLineShippingTypeList);
+        $obShippingType = $obLineShippingTypeList->first(fn (ShippingType $obLineShippingType) => (bool) $obLineShippingType->active)
+            ?? $obLineShippingTypeList->first();
+
+        return empty($obShippingType) ? null : (int) $obShippingType->id;
     }
 
     /**
@@ -132,7 +183,7 @@ class ParseOrderItemFromOneC
     }
 
     /**
-     * Status, shipping and lines in one transaction, every exit commits or rolls it back.
+     * Lines, status and shipping in one transaction, every exit commits or rolls it back.
      * @throws \Exception
      */
     protected function syncOrder()
@@ -149,11 +200,17 @@ class ParseOrderItemFromOneC
             return;
         }
 
+        $this->getShippingTypeMap();
+        $this->getOrderShippingData();
+
         DB::beginTransaction();
 
         try {
-            $this->updateOrderData();
             $bSynced = $this->mirrorOrderPositionList($this->arData['order_position_list']);
+
+            if ($bSynced) {
+                $this->updateOrderData();
+            }
         } catch (\Throwable $obException) {
             DB::rollBack();
 
@@ -169,57 +226,62 @@ class ParseOrderItemFromOneC
 
         DB::commit();
 
+        foreach ($this->arUnmappedServiceIdList as $sExternalId) {
+            // The shop->1C export sends the shipping type GUID, this charge cannot round-trip.
+            Log::warning('1C order ' . $sOrderNumber . ' service line ' . $sExternalId . ' maps to no shipping type');
+        }
+
         Result::setTrue();
     }
 
     /**
-     * Update order data.
+     * Status, shipping and totals in one order save, after the lines are mirrored.
+     * Order listeners (Meta Purchase on a paid status) see the final 1C numbers.
      * @throws \Exception
      */
     protected function updateOrderData()
     {
         $sCodeStatus = $this->formatString(array_get($this->arData, 'code_status'));
+        // Status::getByCode('') adds no condition and would return the first status.
+        $obStatus = empty($sCodeStatus) ? null : Status::getByCode($sCodeStatus)->first();
 
-        if (empty($sCodeStatus)) {
-            return;
-        }
-
-        $obStatus = Status::getByCode($sCodeStatus)->first();
-
-        if (empty($obStatus)) {
-            return;
-        }
-
-        try {
+        if (!empty($obStatus)) {
             $this->obOrder->status_id = $obStatus->id;
-            // A 1C order without a service line (store pickup) keeps the shipping chosen at checkout.
-            if ($this->fShippingPrice !== null) {
-                $this->obOrder->shipping_price = $this->fShippingPrice;
-            }
-            if (!empty($this->obShippingType)) {
-                $this->obOrder->shipping_type_id = $this->obShippingType->id;
-            }
-            $this->obOrder->save();
-        } catch (\Exception $obException) {
-            throw new $obException('Cannot update order #' . $this->obOrder->id);
         }
+
+        // A 1C order without a service line (store pickup) keeps the shipping chosen at checkout.
+        if ($this->fShippingPrice !== null) {
+            $this->obOrder->shipping_price = $this->fShippingPrice;
+        }
+
+        if (!empty($this->iShippingTypeID)) {
+            $this->obOrder->shipping_type_id = $this->iShippingTypeID;
+        }
+
+        // The 1C line totals already contain every discount the manager kept, nothing may be applied on top.
+        $this->obOrder->order_promo_mechanism()->delete();
+        $this->obOrder->reloadRelations('order_position');
+        // The processor reads the unsaved shipping price, listeners of the save below get the final totals.
+        OrderPromoMechanismProcessor::update($this->obOrder);
+
+        $this->obOrder->save();
     }
 
     /**
-     * Write the 1C lines and recompute the order totals.
+     * Write the 1C goods lines, each line takes its own position with that 1C Ид.
      * @param array $arOrderPositionList
      * @return bool
      * @throws \Exception
      */
     protected function mirrorOrderPositionList(array $arOrderPositionList): bool
     {
-        $arOrderPositionExternalIdListFromOneC = [];
+        $arMatchedPositionIdList = [];
         $arOrderPositionDataToAdd = [];
 
         foreach ($arOrderPositionList as $arOrderPosition) {
             $sExternalId = $this->formatString(array_get($arOrderPosition, 'external_id'));
 
-            if (empty($sExternalId) || in_array($sExternalId, $this->arShippingTypeExternalIds) || !empty($arOrderPosition['is_service'])) {
+            if (empty($sExternalId) || isset($this->arShippingTypeMap[$sExternalId]) || !empty($arOrderPosition['is_service'])) {
                 continue;
             }
 
@@ -236,71 +298,81 @@ class ParseOrderItemFromOneC
             // 1C Сумма is what the customer was charged for the line, ЦенаЗаЕдиницу the list price.
             $fPrice = round($fTotal / $iQuantity, 2);
 
-            $arOrderPositionExternalIdListFromOneC[] = $sExternalId;
-
-            $obOrderPosition = OrderPosition::where('order_id', $this->obOrder->id)
+            $obSameIdPositionList = OrderPosition::where('order_id', $this->obOrder->id)
                 ->where('one_c_external_id', $sExternalId)
-                ->first();
+                ->orderBy('id')
+                ->get();
+            $obOrderPosition = $obSameIdPositionList->whereNotIn('id', $arMatchedPositionIdList)->first();
 
             if (empty($obOrderPosition)) {
-                $iOfferExternalId = $this->getOfferExternalId($sExternalId);
-                $obOffer = Offer::where('external_id', $iOfferExternalId)->first();
+                $arItem = $this->getNewPositionItem($sExternalId, $obSameIdPositionList->first());
 
-                if (empty($obOffer)) {
-                    Result::setFalse()->setMessage('Not found offer with external_id ' . $iOfferExternalId);
-
+                if (empty($arItem)) {
                     break;
                 }
 
-                $arOrderPositionDataToAdd[$sExternalId] = [
+                $arOrderPositionDataToAdd[] = $arItem + [
                     'order_id' => $this->obOrder->id,
                     'one_c_external_id' => $sExternalId,
-                    'item_id' => $obOffer->id,
-                    'item_type' => Offer::class,
                     'price' => $fPrice,
                     'old_price' => $fListPrice,
                     'quantity' => $iQuantity
                 ];
-            } else {
-                $obOrderPosition->price = $fPrice;
-                $obOrderPosition->old_price = $fListPrice;
-                $obOrderPosition->quantity = $iQuantity;
 
-                if ($obOrderPosition->isClean()) {
-                    continue;
-                }
+                continue;
+            }
 
-                try {
-                    $obOrderPosition->save();
-                } catch (ModelException $obModelException) {
-                    Log::error($obModelException);
-                    Result::setFalse()->setMessage($obModelException->getMessage());
-                }
+            $arMatchedPositionIdList[] = $obOrderPosition->id;
+
+            $obOrderPosition->price = $fPrice;
+            $obOrderPosition->old_price = $fListPrice;
+            $obOrderPosition->quantity = $iQuantity;
+
+            if ($obOrderPosition->isClean()) {
+                continue;
+            }
+
+            try {
+                $obOrderPosition->save();
+            } catch (ModelException $obModelException) {
+                Log::error($obModelException);
+                Result::setFalse()->setMessage($obModelException->getMessage());
             }
         }
-
-        $arOrderPositionExternalIdList = $this->obOrder->order_position
-            ->keyBy('one_c_external_id')
-            ->keys()
-            ->toArray();
-
-        $arOrderPositionExternalIdListToDelete = array_diff($arOrderPositionExternalIdList, $arOrderPositionExternalIdListFromOneC);
-
-        $this->deleteOrderPositionsByExternalIdList($arOrderPositionExternalIdListToDelete);
-        $this->addOrderPositionsByExternalIdList($arOrderPositionDataToAdd);
 
         if (!Result::status()) {
             return false;
         }
 
-        // The 1C line totals already contain every discount the manager kept, nothing may be applied on top.
-        $this->obOrder->order_promo_mechanism()->delete();
-        $this->obOrder->reloadRelations('order_position');
-        OrderPromoMechanismProcessor::update($this->obOrder);
+        $this->deleteUnmatchedOrderPositionList($arMatchedPositionIdList);
+        $this->addOrderPositionList($arOrderPositionDataToAdd);
 
-        $this->obOrder->save();
+        return Result::status();
+    }
 
-        return true;
+    /**
+     * Item of a position the sync adds. A 1C Ид listed again takes the item of the position its first line
+     * matched, a bare product Ид (product with one offer, see OrderPositionModelHandler) names no offer.
+     * @param string $sExternalId
+     * @param OrderPosition|null $obSameIdPosition
+     * @return array|null item_id, item_type
+     */
+    private function getNewPositionItem(string $sExternalId, ?OrderPosition $obSameIdPosition): ?array
+    {
+        if (!empty($obSameIdPosition)) {
+            return $obSameIdPosition->only(['item_id', 'item_type']);
+        }
+
+        $sOfferExternalId = $this->getOfferExternalId($sExternalId);
+        $obOffer = Offer::where('external_id', $sOfferExternalId)->first();
+
+        if (empty($obOffer)) {
+            Result::setFalse()->setMessage('Not found offer with external_id ' . $sOfferExternalId);
+
+            return null;
+        }
+
+        return ['item_id' => $obOffer->id, 'item_type' => Offer::class];
     }
 
     /**
@@ -324,19 +396,14 @@ class ParseOrderItemFromOneC
     }
 
     /**
-     * Delete order positions by external id list
-     * @param array $arOrderPositionExternalIdList
-     * @throws \Exception
+     * Delete the order positions no 1C line matched
+     * @param array $arMatchedPositionIdList
      */
-    private function deleteOrderPositionsByExternalIdList(array $arOrderPositionExternalIdList)
+    private function deleteUnmatchedOrderPositionList(array $arMatchedPositionIdList)
     {
-        if (empty($arOrderPositionExternalIdList)) {
-            return;
-        }
-
         try {
             OrderPosition::where('order_id', $this->obOrder->id)
-                ->whereIn('one_c_external_id', $arOrderPositionExternalIdList)
+                ->whereNotIn('id', $arMatchedPositionIdList)
                 ->delete();
         } catch (\Exception $obException) {
             Result::setFalse()->setMessage($obException->getMessage());
@@ -345,16 +412,12 @@ class ParseOrderItemFromOneC
     }
 
     /**
-     * Add order positions by external id list
+     * Add order positions for the 1C lines no position matched
      * @param array $arOrderPositionDataToAdd
      */
-    private function addOrderPositionsByExternalIdList(array $arOrderPositionDataToAdd)
+    private function addOrderPositionList(array $arOrderPositionDataToAdd)
     {
         if (!Result::status()) {
-            return;
-        }
-
-        if (empty($this->obOrder) || empty($arOrderPositionDataToAdd)) {
             return;
         }
 
@@ -381,8 +444,9 @@ class ParseOrderItemFromOneC
     {
         try {
             $obOrderPosition = OrderPosition::create($arOrderPositionData);
-            $this->obOrder->order_position()->add($obOrderPosition);
-        } catch (\October\Rain\Database\ModelException $obException) {
+            // create() takes price and old_price from the catalog and OrderPositionModelHandler rebuilds the Ид, the 1C values are written back.
+            $obOrderPosition->fill(array_only($arOrderPositionData, ['one_c_external_id', 'price', 'old_price', 'quantity']))->save();
+        } catch (ModelException $obException) {
             $this->processValidationError($obException);
 
             return false;

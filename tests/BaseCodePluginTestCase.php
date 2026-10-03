@@ -73,14 +73,14 @@ abstract class BaseCodePluginTestCase extends PluginTestCase
      * five goods lines at shop prices plus one stale line 1C never had, and one
      * shop mechanism (10 % on every position) still attached.
      */
-    protected function seedCheckoutOrder(): int
+    protected function seedCheckoutOrder(string $sOrderNumber = '260907-0010'): int
     {
-        Db::table('lovata_orders_shopaholic_shipping_types')->insert([
+        Db::table('lovata_orders_shopaholic_shipping_types')->insertOrIgnore([
             'id' => 6, 'active' => 1, 'name' => 'Pakomats', 'code' => 'omniva', 'external_id' => self::DELIVERY_EXTERNAL_ID, 'price' => 4.00,
         ]);
 
         $iOrderID = (int) Db::table('lovata_orders_shopaholic_orders')->insertGetId([
-            'order_number' => '260907-0010',
+            'order_number' => $sOrderNumber,
             'status_id' => 2,
             'shipping_type_id' => 6,
             'shipping_price' => 4.00,
@@ -109,7 +109,28 @@ abstract class BaseCodePluginTestCase extends PluginTestCase
         return $iOrderID;
     }
 
-    private function insertPosition(int $iOrderID, string $sExternalID, int $iItemID, float $fPrice): void
+    /**
+     * Catalog offer behind a 1C Ид "product#offer", the only offer of its product.
+     * Its catalog prices are what Lovata copies into a position it creates.
+     */
+    protected function seedOffer(string $sOneCExternalID, float $fPrice, float $fOldPrice): int
+    {
+        [$sProductExternalID, $sOfferExternalID] = explode('#', $sOneCExternalID);
+
+        $iProductID = (int) Db::table('lovata_shopaholic_products')->insertGetId([
+            'active' => 1, 'name' => $sProductExternalID, 'slug' => $sProductExternalID, 'external_id' => $sProductExternalID,
+        ]);
+        $iOfferID = (int) Db::table('lovata_shopaholic_offers')->insertGetId([
+            'active' => 1, 'product_id' => $iProductID, 'name' => $sOfferExternalID, 'external_id' => $sOfferExternalID,
+        ]);
+        Db::table('lovata_shopaholic_prices')->insert([
+            'item_id' => $iOfferID, 'item_type' => self::OFFER_TYPE, 'price' => $fPrice, 'old_price' => $fOldPrice,
+        ]);
+
+        return $iOfferID;
+    }
+
+    protected function insertPosition(int $iOrderID, string $sExternalID, int $iItemID, float $fPrice): void
     {
         Db::table('lovata_orders_shopaholic_order_positions')->insert([
             'order_id' => $iOrderID,
@@ -217,6 +238,7 @@ abstract class BaseCodePluginTestCase extends PluginTestCase
             $obTable->boolean('is_default')->default(0);
             $obTable->boolean('active')->default(1);
             $obTable->integer('sort_order')->nullable();
+            $obTable->softDeletes();
         });
 
         // TaxHelper lists active taxes while a promo processor recalculates, an empty table means 0 %.
@@ -227,6 +249,49 @@ abstract class BaseCodePluginTestCase extends PluginTestCase
             $obTable->decimal('percent', 8, 2)->nullable();
             $obTable->integer('sort_order')->nullable();
             $obTable->timestamp('deleted_at')->nullable();
+        });
+
+        // A position the sync creates loads its offer, the offer's product and the catalog price.
+        $this->createStubTable('lovata_shopaholic_products', function (Blueprint $obTable) {
+            $obTable->increments('id');
+            $obTable->boolean('active')->default(0);
+            $obTable->string('name');
+            $obTable->string('slug');
+            $obTable->string('external_id')->nullable();
+            $obTable->softDeletes();
+            $obTable->timestamps();
+        });
+
+        $this->createStubTable('lovata_shopaholic_offers', function (Blueprint $obTable) {
+            $obTable->increments('id');
+            $obTable->boolean('active')->default(0);
+            $obTable->integer('product_id')->nullable();
+            $obTable->string('name');
+            $obTable->string('code')->nullable();
+            $obTable->string('external_id')->nullable();
+            $obTable->integer('sort_order')->nullable();
+            $obTable->softDeletes();
+            $obTable->timestamps();
+        });
+
+        $this->createStubTable('lovata_shopaholic_prices', function (Blueprint $obTable) {
+            $obTable->increments('id');
+            $obTable->integer('item_id');
+            $obTable->string('item_type');
+            $obTable->decimal('price', 15, 2)->nullable();
+            $obTable->decimal('old_price', 15, 2)->nullable();
+            $obTable->integer('price_type_id')->nullable();
+            $obTable->timestamps();
+        });
+
+        $this->createStubTable('lovata_shopaholic_price_types', function (Blueprint $obTable) {
+            $obTable->increments('id');
+            $obTable->boolean('active')->default(0);
+            $obTable->string('name');
+            $obTable->string('code')->nullable();
+            $obTable->integer('sort_order')->nullable();
+            $obTable->softDeletes();
+            $obTable->timestamps();
         });
 
         Db::table('lovata_orders_shopaholic_statuses')->insert([

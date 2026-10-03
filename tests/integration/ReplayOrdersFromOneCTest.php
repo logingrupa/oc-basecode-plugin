@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB as Db;
 use Illuminate\Support\Facades\Event;
 use Lovata\OrdersShopaholic\Models\Order;
+use Lovata\OrdersShopaholic\Models\OrderPosition;
 
 /**
  * The replay applies only the latest 1C export of each order and wakes no
@@ -77,6 +78,30 @@ class ReplayOrdersFromOneCTest extends BaseCodePluginTestCase
         $this->assertStringContainsString('1cbitrix-newer.xml 260907-0010 has no lines in 1C, skipped', $sOutput);
         $this->assertStringContainsString('orders 1, synced 0, skipped 1, failed 0', $sOutput);
         $this->assertSame($iPositionCount, Db::table('lovata_orders_shopaholic_order_positions')->where('order_id', $iOrderID)->count());
+        $this->assertSame(0, Db::transactionLevel());
+    }
+
+    public function testThrowingSyncIsReportedAsFailedAndTheReplayGoesOn(): void
+    {
+        $iFailingOrderID = $this->seedCheckoutOrder();
+        $iNextOrderID = $this->seedCheckoutOrder('260907-0011');
+        file_put_contents($this->sDirectory.'/1cbitrix-next.xml', str_replace('<Номер>260907-0010</Номер>', '<Номер>260907-0011</Номер>', file_get_contents($this->fixturePath(self::FIXTURE_ORDER))));
+        touch($this->sDirectory.'/1cbitrix-next.xml', time() - 1800);
+        Event::listen('eloquent.saving: '.OrderPosition::class, function (OrderPosition $obPosition) use ($iFailingOrderID) {
+            if ((int) $obPosition->order_id === $iFailingOrderID) {
+                throw new RuntimeException('position save failed');
+            }
+        });
+
+        $iExit = Artisan::call('basecode:1c.replay_orders', ['--dir' => $this->sDirectory]);
+        $sOutput = Artisan::output();
+
+        $this->assertSame(1, $iExit, $sOutput);
+        $this->assertStringContainsString('1cbitrix-newer.xml 260907-0010 FAILED: RuntimeException: position save failed', $sOutput);
+        $this->assertStringContainsString('1cbitrix-next.xml 260907-0011 synced', $sOutput, 'the next order is still replayed');
+        $this->assertStringContainsString('files 3, orders 2, synced 1, skipped 0, failed 1', $sOutput);
+        $this->assertSame(2, (int) Db::table('lovata_orders_shopaholic_orders')->where('id', $iFailingOrderID)->value('status_id'), 'failed order rolled back');
+        $this->assertSame(49.21, round(Order::find($iNextOrderID)->total_price_value, 2));
         $this->assertSame(0, Db::transactionLevel());
     }
 
