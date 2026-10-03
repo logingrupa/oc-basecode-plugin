@@ -62,6 +62,24 @@ class ReplayOrdersFromOneCTest extends BaseCodePluginTestCase
         $this->assertSame(49.21, round(Order::find($iOrderID)->total_price_value, 2));
     }
 
+    public function testLatestExportWithoutLinesIsReportedAsSkipped(): void
+    {
+        $iOrderID = $this->seedCheckoutOrder();
+        $iPositionCount = Db::table('lovata_orders_shopaholic_order_positions')->where('order_id', $iOrderID)->count();
+        $sEmpty = preg_replace('~<Товары>.*</Товары>~su', '<Товары></Товары>', file_get_contents($this->fixturePath(self::FIXTURE_ORDER)));
+        file_put_contents($this->sDirectory.'/1cbitrix-newer.xml', $sEmpty);
+        touch($this->sDirectory.'/1cbitrix-newer.xml', time() - 3600);
+
+        $iExit = Artisan::call('basecode:1c.replay_orders', ['--dir' => $this->sDirectory]);
+        $sOutput = Artisan::output();
+
+        $this->assertSame(0, $iExit, $sOutput);
+        $this->assertStringContainsString('1cbitrix-newer.xml 260907-0010 has no lines in 1C, skipped', $sOutput);
+        $this->assertStringContainsString('orders 1, synced 0, skipped 1, failed 0', $sOutput);
+        $this->assertSame($iPositionCount, Db::table('lovata_orders_shopaholic_order_positions')->where('order_id', $iOrderID)->count());
+        $this->assertSame(0, Db::transactionLevel());
+    }
+
     public function testOrderFilterSkipsUnknownOrdersWithoutFailing(): void
     {
         $iExit = Artisan::call('basecode:1c.replay_orders', ['--dir' => $this->sDirectory, '--order' => '260907-0010']);

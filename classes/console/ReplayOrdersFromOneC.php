@@ -53,6 +53,12 @@ class ReplayOrdersFromOneC extends Command
                 continue;
             }
 
+            if (empty($arData['order_position_list'])) {
+                $iSkipped++;
+                $this->line($sFileName . ' ' . $sOrderNumber . ' has no lines in 1C, skipped');
+                continue;
+            }
+
             Result::setTrue()->setMessage('');
             (new ParseOrderItemFromOneC())->process($arData);
 
