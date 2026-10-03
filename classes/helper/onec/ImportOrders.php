@@ -13,6 +13,8 @@ class ImportOrders extends AbstractHelper
     const ORDER_STATUS_CODE_CANCELED = 'canceled';
     const ORDER_STATUS_CODE_IN_PROGRESS = 'in_progress';
     const ORDER_STATUS_CODE_COMPLETE = 'complete';
+    // ТипНоменклатуры of a 1C service line, in the 1C session language (ru or lv).
+    const SERVICE_TYPE_LIST = ['Услуга', 'Pakalpojums'];
 
     /**
      * Processing.
@@ -158,10 +160,27 @@ class ImportOrders extends AbstractHelper
                 'price' => $obOrderPositionXmlObject->getValueByPath('ЦенаЗаЕдиницу'),
                 'quantity' => $obOrderPositionXmlObject->getValueByPath('Количество'),
                 'total' => $obOrderPositionXmlObject->getValueByPath('Сумма'),
+                'is_service' => self::isService($obOrderPositionXmlObject),
             ];
         }
 
         return $arData;
+    }
+
+    /**
+     * Service lines (shipping, extra charges) carry no catalog offer.
+     * @param \Lovata\BaseCode\Classes\Parser\XMLObjectClass $obXmlPositionObject
+     * @return bool
+     */
+    protected static function isService($obXmlPositionObject): bool
+    {
+        foreach ($obXmlPositionObject->xpath('ЗначенияРеквизитов/ЗначениеРеквизита') as $obXmlObject) {
+            if ($obXmlObject->getValueByPath('Наименование') === 'ТипНоменклатуры') {
+                return in_array($obXmlObject->getValueByPath('Значение'), self::SERVICE_TYPE_LIST, true);
+            }
+        }
+
+        return false;
     }
 
     /**

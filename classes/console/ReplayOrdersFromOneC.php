@@ -59,7 +59,6 @@ class ReplayOrdersFromOneC extends Command
                 continue;
             }
 
-            Result::setTrue()->setMessage('');
             (new ParseOrderItemFromOneC())->process($arData);
 
             if (Result::status()) {

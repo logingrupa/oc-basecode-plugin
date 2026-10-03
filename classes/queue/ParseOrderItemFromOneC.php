@@ -38,7 +38,7 @@ class ParseOrderItemFromOneC
     /** @var array */
     protected $arShippingTypeExternalIds = [];
 
-    /** @var float */
+    /** @var float|null */
     protected $fShippingPrice;
 
     /** @var \Illuminate\Database\Eloquent\Model|ShippingType|object|null */
@@ -64,6 +64,8 @@ class ParseOrderItemFromOneC
     public function process(array $arData)
     {
         Import1CHelper::instance()->setTrueStatus();
+        // Result is process-wide, a queue worker would otherwise carry an earlier job's failure into this sync.
+        Result::setTrue()->setMessage('');
         $this->arData = $arData;
 
         if (empty($this->arData)) {
@@ -91,29 +93,28 @@ class ParseOrderItemFromOneC
     }
 
     /**
-     * Get shipping data.
+     * Shipping price = every 1C service line (shipping type lines and extra charges like "zPAK - Shipping cost").
+     * The shipping type only changes when a line matches one.
      */
     protected function getOrderShippingData()
     {
-        $fPrice = 0;
+        $fPrice = null;
         $sExternalId = null;
 
-        $arOrderPositionList = array_get($this->arData, 'order_position_list');
-        foreach ($arOrderPositionList as $arOrderPosition) {
-            $sExternalId = $this->formatString(array_get($arOrderPosition, 'external_id'));
+        foreach (array_get($this->arData, 'order_position_list') as $arOrderPosition) {
+            $sLineExternalId = $this->formatString(array_get($arOrderPosition, 'external_id'));
+            $bShippingType = in_array($sLineExternalId, $this->arShippingTypeExternalIds);
 
-            if (!in_array($sExternalId, $this->arShippingTypeExternalIds)) {
+            if (!$bShippingType && empty($arOrderPosition['is_service'])) {
                 continue;
             }
 
-            $fPrice = $this->formatString(array_get($arOrderPosition, 'price'));
-            $fPrice = PriceHelper::toFloat($fPrice);
-
-            break;
+            $sExternalId = $bShippingType ? $sLineExternalId : $sExternalId;
+            $fPrice += PriceHelper::toFloat($this->formatString(array_get($arOrderPosition, 'total')));
         }
 
         $this->fShippingPrice = $fPrice;
-        $this->obShippingType = ShippingType::where('external_id', $sExternalId)->first();
+        $this->obShippingType = empty($sExternalId) ? null : ShippingType::where('external_id', $sExternalId)->first();
     }
 
     /**
@@ -131,7 +132,7 @@ class ParseOrderItemFromOneC
     }
 
     /**
-     * Sync order.
+     * Status, shipping and lines in one transaction, every exit commits or rolls it back.
      * @throws \Exception
      */
     protected function syncOrder()
@@ -148,8 +149,27 @@ class ParseOrderItemFromOneC
             return;
         }
 
-        $this->updateOrderData();
-        $this->updateOrderPositionData();
+        DB::beginTransaction();
+
+        try {
+            $this->updateOrderData();
+            $bSynced = $this->mirrorOrderPositionList($this->arData['order_position_list']);
+        } catch (\Throwable $obException) {
+            DB::rollBack();
+
+            throw $obException;
+        }
+
+        if (!$bSynced) {
+            DB::rollBack();
+            Log::warning('1C order ' . $sOrderNumber . ' sync failed: ' . Result::message());
+
+            return;
+        }
+
+        DB::commit();
+
+        Result::setTrue();
     }
 
     /**
@@ -172,42 +192,17 @@ class ParseOrderItemFromOneC
 
         try {
             $this->obOrder->status_id = $obStatus->id;
-            // A 1C order without a delivery line (store pickup) keeps the shipping type chosen at checkout.
-            if (!empty($this->obShippingType)) {
+            // A 1C order without a service line (store pickup) keeps the shipping chosen at checkout.
+            if ($this->fShippingPrice !== null) {
                 $this->obOrder->shipping_price = $this->fShippingPrice;
+            }
+            if (!empty($this->obShippingType)) {
                 $this->obOrder->shipping_type_id = $this->obShippingType->id;
             }
             $this->obOrder->save();
         } catch (\Exception $obException) {
             throw new $obException('Cannot update order #' . $this->obOrder->id);
         }
-    }
-
-    /**
-     * Mirror the 1C lines in one transaction, every exit commits or rolls it back.
-     * @throws \Throwable
-     */
-    protected function updateOrderPositionData()
-    {
-        DB::beginTransaction();
-
-        try {
-            $bSynced = $this->mirrorOrderPositionList($this->arData['order_position_list']);
-        } catch (\Throwable $obException) {
-            DB::rollBack();
-
-            throw $obException;
-        }
-
-        if (!$bSynced) {
-            DB::rollBack();
-
-            return;
-        }
-
-        DB::commit();
-
-        Result::setTrue();
     }
 
     /**
@@ -224,7 +219,7 @@ class ParseOrderItemFromOneC
         foreach ($arOrderPositionList as $arOrderPosition) {
             $sExternalId = $this->formatString(array_get($arOrderPosition, 'external_id'));
 
-            if (empty($sExternalId) || in_array($sExternalId, $this->arShippingTypeExternalIds)) {
+            if (empty($sExternalId) || in_array($sExternalId, $this->arShippingTypeExternalIds) || !empty($arOrderPosition['is_service'])) {
                 continue;
             }
 
