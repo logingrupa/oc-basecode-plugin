@@ -225,7 +225,7 @@ class ParseOrderItemFromOneCTest extends BaseCodePluginTestCase
         $this->assertSame(50.21, round($obOrder->total_price_value, 2), 'lines mirrored, 45.21 + 5.00');
     }
 
-    public function testDocumentWithoutServiceLineKeepsTheCheckoutShipping(): void
+    public function testDocumentWithoutServiceLineIsFreeShipping(): void
     {
         $arData = $this->fixturePayload();
         unset($arData['order_position_list'][self::DELIVERY_LINE]);
@@ -233,8 +233,9 @@ class ParseOrderItemFromOneCTest extends BaseCodePluginTestCase
         $this->sync($arData);
 
         $obOrder = Order::find($this->iOrderID);
-        $this->assertSame(6, (int) $obOrder->shipping_type_id);
-        $this->assertSame(4.0, (float) $obOrder->shipping_price_value, 'never overwritten with 0');
+        $this->assertSame(6, (int) $obOrder->shipping_type_id, 'the checkout shipping type stays');
+        $this->assertSame(0.0, (float) $obOrder->shipping_price_value, 'free shipping, the checkout discount row is gone');
+        $this->assertSame(45.21, round($obOrder->total_price_value, 2), 'order total = 1C document total');
     }
 
     public function testInactiveShippingTypeMappedToAServiceLineIsAssigned(): void

@@ -25,3 +25,5 @@
   - 1C service lines (shipping types and extra charges like "zPAK - Shipping cost") are shipping cost, never order positions, so an order with a shipping charge 1C added no longer fails the sync. Each sync resets the shared result, an earlier failed job in the queue worker no longer rolls back every later sync. Status and shipping change in the same transaction as the lines, and a failed sync is logged.
 1.0.11:
   - 1C order sync gives each 1C line its own position and keeps the 1C prices on positions it adds. Service lines set the shipping even without a known status, and a hidden mapping-only type never replaces the order's own. basecode:1c.replay_orders goes on after an order that throws.
+1.0.12:
+  - A 1C document without a shipping line is free shipping, the sync sets the shipping price to 0. The checkout free shipping discount row is gone after a sync, so the old 4.00 came back.

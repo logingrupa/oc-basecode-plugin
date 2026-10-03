@@ -249,10 +249,8 @@ class ParseOrderItemFromOneC
             $this->obOrder->status_id = $obStatus->id;
         }
 
-        // A 1C order without a service line (store pickup) keeps the shipping chosen at checkout.
-        if ($this->fShippingPrice !== null) {
-            $this->obOrder->shipping_price = $this->fShippingPrice;
-        }
+        // The shop exports a shipping line only when shipping is charged, a 1C document without one is free shipping.
+        $this->obOrder->shipping_price = (float) $this->fShippingPrice;
 
         if (!empty($this->iShippingTypeID)) {
             $this->obOrder->shipping_type_id = $this->iShippingTypeID;
